@@ -3,9 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"os"
 
+  "github.com/golang/glog"
 	"github.com/google/gousb"
 	"github.com/google/gousb/usbid"
 	"github.com/kubevirt/device-plugin-manager/pkg/dpm"
@@ -14,7 +14,6 @@ import (
 )
 
 type YubikeyPlugin struct {
-  KEYs map[string]map[string]int
   Ctx *gousb.Context
   Heartbeat chan bool
 }
@@ -32,24 +31,55 @@ func (p *YubikeyPlugin) GetDevicePluginOptions(ctx context.Context, e *pluginapi
   return &pluginapi.DevicePluginOptions{}, nil
 }
 
-func (p *YubikeyPlugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.DevicePlugin_ListAndWatchServer) error {
-  
-  devs, err := p.Ctx.OpenDevices(func (desc *gousb.DeviceDesc) bool {
-    if desc.Vendor == 0x1050 {
-      devs := make([]*pluginapi.DeviceSpec, 1)
-      devs[0] = &pluginapi.DeviceSpec{
-        HostPath: fmt.Sprintf("/dev/bus/usb/%03d/%03d", desc.Bus, desc.Address),
-        ContainerPath: fmt.Sprintf("/dev/bus/usb/%03d/%03d", desc.Bus, desc.Address),
-        Permissions: "rw",
-      }
-    }
-    return false
+func (p *YubikeyPlugin) ScanDevs() ([]*pluginapi.Device, error) {
+  udevs, err := p.Ctx.OpenDevices(func (desc *gousb.DeviceDesc) bool {
+    return desc.Vendor == 0x1050
   });
 
+  glog.Infof("Found %d devices.\n", len(udevs))
+
   if err == nil {
-    for _, d := range devs { d.Close() }
+    devs := []*pluginapi.Device{}
+    i := 0
+    for _, d := range udevs {
+      id, serr := d.SerialNumber()
+      if serr == nil {
+        dev := &pluginapi.Device{ ID: id, Health: pluginapi.Healthy }
+        devs = append(devs, dev)
+        i += 1
+      } else {
+        glog.Error(serr)
+      }
+      d.Close()
+    }
+    glog.Infof("Filtered %d devices.\n", i)
+    return devs, nil
   } else {
-    log.Default().Println(err)
+    glog.Error(err)
+  }
+  return nil,err
+}
+
+func (p *YubikeyPlugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.DevicePlugin_ListAndWatchServer) error {
+  devs, err := p.ScanDevs()
+
+  if err == nil {
+    glog.Infof("Reports %d devices to Daemon.\n", len(devs))
+    s.Send(&pluginapi.ListAndWatchResponse{ Devices: devs })
+
+    for {
+      select {
+      case <- p.Heartbeat:
+        devs, err = p.ScanDevs()
+        if err != nil {
+          s.Send(&pluginapi.ListAndWatchResponse{})
+        } else {
+          s.Send(&pluginapi.ListAndWatchResponse{ Devices: devs })
+        }
+      }
+    }
+  } else {
+    glog.Error(err)
   }
 
   return nil
@@ -68,18 +98,25 @@ func (p *YubikeyPlugin) PreStartContainer(ctx context.Context, r *pluginapi.PreS
 }
 
 type Lister struct {
+  UpdateDevChan chan dpm.PluginNameList
   Heartbeat chan bool
 }
 
 func (l *Lister) Discover(pluglistch chan dpm.PluginNameList) {
+  pluglistch <- []string{"key"}
   for {
     select {
+    case devs := <- l.UpdateDevChan:
+      pluglistch <- devs
     case <-pluglistch:
       return
     }
   }
 }
-func (l *Lister) NewPlugin(resourceName string) dpm.PluginInterface { return &YubikeyPlugin { Heartbeat: l.Heartbeat } }
+func (l *Lister) NewPlugin(resourceName string) dpm.PluginInterface {
+  glog.Infoln("Try allocating plugin...")
+  return &YubikeyPlugin { Heartbeat: l.Heartbeat }
+}
 func (l *Lister) GetResourceNamespace() string { return "somewhere.here" }
 
 func ListDevicesAndExit() {
@@ -132,7 +169,18 @@ func main() {
   cfg := ParseConfig()
 
   if cfg.ListOnly { ListDevicesAndExit() }
-  manager := dpm.NewManager(&Lister { Heartbeat: make(chan bool) })
+
+  l := Lister {
+    UpdateDevChan: make(chan dpm.PluginNameList),
+    Heartbeat: make(chan bool),
+  }
+
+  manager := dpm.NewManager(&l)
+
+  go func() {
+    l.Heartbeat <- true
+    l.UpdateDevChan <- []string{"key"}
+  }()
 
   manager.Run()
 }
