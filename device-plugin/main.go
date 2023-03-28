@@ -39,7 +39,7 @@ func (p *YubikeyPlugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.DevicePlugi
       devs := make([]*pluginapi.DeviceSpec, 1)
       devs[0] = &pluginapi.DeviceSpec{
         HostPath: fmt.Sprintf("/dev/bus/usb/%03d/%03d", desc.Bus, desc.Address),
-        ContainerPath: fmt.Sprintf("/dev/bus/usb/%03d/%03d", desc.Bus, desc.Address),,
+        ContainerPath: fmt.Sprintf("/dev/bus/usb/%03d/%03d", desc.Bus, desc.Address),
         Permissions: "rw",
       }
     }
