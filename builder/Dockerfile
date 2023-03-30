@@ -3,8 +3,9 @@ RUN apk add curl
 RUN curl -Lo go.tar.gz https://go.dev/dl/go1.19.5.linux-amd64.tar.gz
 
 FROM ubuntu:18.04
+# RUN sed -i 's/archive\./tw.&/' /etc/apt/sources.list
 RUN apt update && apt upgrade -y
-RUN apt install -y build-essential libusb-1.0-0-dev pkg-config
+RUN apt install -y build-essential libusb-1.0-0-dev pkg-config libudev-dev
 RUN apt clean
 
 RUN mkdir -p opt workdir

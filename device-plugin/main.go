@@ -6,24 +6,22 @@ import (
 	"os"
 
   "github.com/golang/glog"
-	"github.com/google/gousb"
-	"github.com/google/gousb/usbid"
 	"github.com/kubevirt/device-plugin-manager/pkg/dpm"
 	"golang.org/x/net/context"
+  hid "github.com/sstallion/go-hid"
 	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
 )
 
 type YubikeyPlugin struct {
-  Ctx *gousb.Context
   Heartbeat chan bool
 }
 
 func (p *YubikeyPlugin) Start() error {
-  p.Ctx = gousb.NewContext()
+  hid.Init()
   return nil
 }
 func (p *YubikeyPlugin) Stop() error {
-  p.Ctx.Close()
+  hid.Exit()
   return nil
 }
 
@@ -32,32 +30,17 @@ func (p *YubikeyPlugin) GetDevicePluginOptions(ctx context.Context, e *pluginapi
 }
 
 func (p *YubikeyPlugin) ScanDevs() ([]*pluginapi.Device, error) {
-  udevs, err := p.Ctx.OpenDevices(func (desc *gousb.DeviceDesc) bool {
-    return desc.Vendor == 0x1050
-  });
 
-  glog.Infof("Found %d devices.\n", len(udevs))
+  devs := []*pluginapi.Device{}
+  err := hid.Enumerate(0x1050, hid.ProductIDAny, func(desc *hid.DeviceInfo) error {
+    dev := &pluginapi.Device{ID: desc.SerialNbr, Health: pluginapi.Healthy}
+    devs = append(devs, dev)
+    return nil
+  })
 
-  if err == nil {
-    devs := []*pluginapi.Device{}
-    i := 0
-    for _, d := range udevs {
-      id, serr := d.SerialNumber()
-      if serr == nil {
-        dev := &pluginapi.Device{ ID: id, Health: pluginapi.Healthy }
-        devs = append(devs, dev)
-        i += 1
-      } else {
-        glog.Error(serr)
-      }
-      d.Close()
-    }
-    glog.Infof("Filtered %d devices.\n", i)
-    return devs, nil
-  } else {
-    glog.Error(err)
-  }
-  return nil,err
+  glog.Infof("Found %d devices.\n", len(devs))
+
+  return devs, err
 }
 
 func (p *YubikeyPlugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.DevicePlugin_ListAndWatchServer) error {
@@ -120,27 +103,13 @@ func (l *Lister) NewPlugin(resourceName string) dpm.PluginInterface {
 func (l *Lister) GetResourceNamespace() string { return "somewhere.here" }
 
 func ListDevicesAndExit() {
-  ctx := gousb.NewContext()
-  defer ctx.Close()
+  hid.Init()
+  defer hid.Exit()
 
-  devs, err := ctx.OpenDevices(func (desc *gousb.DeviceDesc) bool {
-    match := desc.Vendor == 0x1050
-    if !match { return false }
-    fmt.Printf("%03d.%03d %s:%s %s\n", desc.Bus, desc.Address, desc.Vendor, desc.Product, usbid.Describe(desc))
-
-    // prevent allocation
-    return false
+  hid.Enumerate(0x1050, hid.ProductIDAny, func (desc *hid.DeviceInfo) error {
+    fmt.Printf("%s %s %s\n",desc.Path, desc.SerialNbr, desc.ProductStr)
+    return nil
   })
-
-  // cleanup
-  defer func() {
-    for _, d := range devs { d.Close() }
-  }()
-
-  if err != nil {
-    fmt.Fprintln(os.Stderr, err)
-    os.Exit(-1)
-  }
 
   os.Exit(0)
 }
